@@ -10,11 +10,8 @@ import numpy
 
 
 if cuda.cudnn_enabled:
-    cudnn = cuda.cudnn
-    try:
-        libcudnn = cudnn.cudnn
-    except Exception:
-        libcudnn = cudnn.py_cudnn
+    from cupy.cuda import cudnn
+    libcudnn = cudnn
 
 
 def _as4darray(arr):
