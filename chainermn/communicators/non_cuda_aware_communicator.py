@@ -46,7 +46,9 @@ class NonCudaAwareCommunicator(mpi_communicator_base.MpiCommunicatorBase):
         for _, param in sorted(model.namedparams()):
             data = param.data
             tmp_cpu = chainer.cuda.to_cpu(data)
-            self.mpi_comm.Bcast(tmp_cpu)
+            # Bcast can't handle float16
+            # self.mpi_comm.Bcast(tmp_cpu)
+            tmp_cpu = self.mpi_comm.bcast(tmp_cpu)
             tmp_gpu = chainer.cuda.to_gpu(tmp_cpu)
             data[:] = tmp_gpu
 
@@ -55,6 +57,9 @@ class NonCudaAwareCommunicator(mpi_communicator_base.MpiCommunicatorBase):
         stream = chainer.cuda.Stream.null
 
         params = _memory_utility.extract_params(model)
+        for param in params:
+            param.array = param.array.astype(np.float32)
+            param.grad = param.grad.astype(np.float32)
         itemsize = 4
         n_elems_total = sum(param.grad.size for param in params)
         n_elems_per_node = int(math.ceil(n_elems_total / self.inter_size))
@@ -105,3 +110,7 @@ class NonCudaAwareCommunicator(mpi_communicator_base.MpiCommunicatorBase):
 
         _memory_utility.unpack_params(
             params, itemsize, 'grad', self.gpu_buffer_b)
+
+        for param in params:
+            param.array = param.array.astype(np.float16)
+            param.grad = param.grad.astype(np.float16)
