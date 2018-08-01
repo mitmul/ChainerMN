@@ -1,6 +1,7 @@
 import chainer.cuda
 import math
 import mpi4py.MPI
+import numpy as np
 
 from chainermn.communicators import _communication_utility
 from chainermn.communicators import _memory_utility
@@ -47,9 +48,9 @@ class NonCudaAwareCommunicator(mpi_communicator_base.MpiCommunicatorBase):
             data = param.data
             tmp_cpu = chainer.cuda.to_cpu(data)
             # Bcast can't handle float16
-            # self.mpi_comm.Bcast(tmp_cpu)
-            tmp_cpu = self.mpi_comm.bcast(tmp_cpu)
-            tmp_gpu = chainer.cuda.to_gpu(tmp_cpu)
+            orig_dtype = tmp_cpu.dtype
+            self.mpi_comm.Bcast(tmp_cpu.view(dtype=np.uint8))
+            tmp_gpu = chainer.cuda.to_gpu(tmp_cpu.view(dtype=orig_dtype))
             data[:] = tmp_gpu
 
     def allreduce_grad(self, model):
@@ -57,7 +58,17 @@ class NonCudaAwareCommunicator(mpi_communicator_base.MpiCommunicatorBase):
         stream = chainer.cuda.Stream.null
 
         params = _memory_utility.extract_params(model)
-        itemsize = 2
+        if params[0].dtype == np.float32:
+            itemsize = 4
+            nccl_dtype = nccl.NCCL_FLOAT
+        elif params[0].dtype == np.float16:
+            itemsize = 2
+            nccl_dtype = nccl.NCCL_FLOAT16
+        else:
+            raise TypeError(
+                'allreduce_grad can only handle either float16 or float32'
+                ' but {} was found.'.format(params[0].dtype))
+
         n_elems_total = sum(param.grad.size for param in params)
         n_elems_per_node = int(math.ceil(n_elems_total / self.inter_size))
         n_elems_buffer = n_elems_per_node * self.inter_size
@@ -72,7 +83,7 @@ class NonCudaAwareCommunicator(mpi_communicator_base.MpiCommunicatorBase):
         # Intra-node reduce
         self.intra_nccl_comm.reduce(
             self.gpu_buffer_a.ptr(), self.gpu_buffer_b.ptr(), n_elems_total,
-            nccl.NCCL_FLOAT16, nccl.NCCL_SUM, 0, stream.ptr)
+            nccl_dtype, nccl.NCCL_SUM, 0, stream.ptr)
 
         # Inter-node allreduce
         if self.intra_rank == 0:
@@ -102,7 +113,7 @@ class NonCudaAwareCommunicator(mpi_communicator_base.MpiCommunicatorBase):
 
         # Intra-node bcast
         self.intra_nccl_comm.bcast(
-            self.gpu_buffer_b.ptr(), n_elems_total, nccl.NCCL_FLOAT, 0,
+            self.gpu_buffer_b.ptr(), n_elems_total, nccl_dtype, 0,
             stream.ptr)
 
         _memory_utility.unpack_params(
